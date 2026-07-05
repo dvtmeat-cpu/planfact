@@ -7,6 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js" defer></script>
   <style>
     :root{
       --bg:#f3f4f6;
@@ -65,9 +66,19 @@
       margin-top:4px;
     }
 
+    .month{
+      font-size:11px;
+      text-transform:uppercase;
+      letter-spacing:.12em;
+      color:var(--muted);
+      margin-bottom:4px;
+      text-align:center;
+    }
+
     .corps{
       display:grid;
       gap:6px;
+      margin-bottom:8px;
     }
     .corp-card{
       background:var(--surface2);
@@ -92,9 +103,27 @@
     .k{
       color:var(--muted);
     }
-    .ok{color:var(--success)}
-    .warnc{color:var(--warn)}
-    .bad{color:var(--error)}
+
+    /* новая цветовая логика выполнения */
+    .perf{
+      font-size:22px;
+      font-weight:700;
+    }
+    .perf-low{color:#b42318;}     /* <80% */
+    .perf-mid{color:#e0aa00;}     /* 80–95% */
+    .perf-high{color:#2f7d32;}    /* >95% */
+
+    .chart-title{
+      font-size:11px;
+      text-transform:uppercase;
+      letter-spacing:.1em;
+      color:var(--muted);
+      margin:6px 0 4px;
+    }
+    .chart-wrap{
+      height:130px;
+      margin-bottom:4px;
+    }
   </style>
 </head>
 <body>
@@ -102,24 +131,34 @@
   <div class="card" id="rootCard">
     <div class="total">
       <div class="label">Общий процент выполнения плана (все дни)</div>
-      <div class="num" id="kpiPct">—</div>
+      <div class="num perf" id="kpiPct">—</div>
       <div class="sub" id="kpiSub">Загрузка…</div>
     </div>
 
+    <div class="month" id="monthLabel">Месяц не определён</div>
+
     <div class="corps" id="corps"></div>
+
+    <div class="chart-title">Объём выпуска по корпусам</div>
+    <div class="chart-wrap"><canvas id="chartOutput"></canvas></div>
+
+    <div class="chart-title">Объём брака по корпусам</div>
+    <div class="chart-wrap"><canvas id="chartScrap"></canvas></div>
   </div>
 </div>
 
 <script>
-// опубликованный CSV из Google Sheets
 const CSV_URL = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vTjo8Kl0hQ0mNl72rKCvl1PkhwvGBpMF5zPz9H38wlPB_SU2xB7C9oLUWsUlidrc2bBUASvwP0L4XCK/pub?gid=468373869&single=true&output=csv';
 
 const els = {
   rootCard: document.getElementById('rootCard'),
   kpiPct: document.getElementById('kpiPct'),
   kpiSub: document.getElementById('kpiSub'),
+  monthLabel: document.getElementById('monthLabel'),
   corps: document.getElementById('corps')
 };
+
+let chartOutput, chartScrap;
 
 // --- утилиты ---
 function parseCSV(text){
@@ -157,7 +196,13 @@ const num = v => {
 };
 const fmt = n => new Intl.NumberFormat('ru-RU',{maximumFractionDigits:0}).format(Math.round(n || 0));
 const pct = v => Number.isFinite(v) ? `${v.toFixed(1)}%` : '—';
-const cls = p => p >= 100 ? 'ok' : p >= 90 ? 'warnc' : 'bad';
+
+// новые пороги
+function perfClass(p){
+  if(p < 80) return 'perf perf-low';
+  if(p < 95) return 'perf perf-mid';
+  return 'perf perf-high';
+}
 
 // --- читаем строки ---
 function mapRows(raw){
@@ -206,9 +251,27 @@ function summarizeAll(rows){
   return total;
 }
 
+// --- вывод месяца ---
+function renderMonth(rows){
+  if(!rows.length){
+    els.monthLabel.textContent = 'Месяц не определён';
+    return;
+  }
+  const dates = rows.map(r => r.date).filter(Boolean).sort();
+  const first = dates[0];
+  // ожидаемый формат: YYYY-MM-DD
+  const [y,m] = first.split('-');
+  const months = ['январь','февраль','март','апрель','май','июнь','июль','август','сентябрь','октябрь','ноябрь','декабрь'];
+  const idx = Number(m) - 1;
+  if(idx >= 0 && idx < 12){
+    els.monthLabel.textContent = `${months[idx]} ${y}`;
+  } else {
+    els.monthLabel.textContent = first;
+  }
+}
+
 // --- вывод корпусов ---
 function renderCorps(corps){
-  // сортируем по номеру корпуса
   const entries = Object.entries(corps).sort((a,b) => {
     const na = parseInt(a[0].replace(/\D+/g,''),10) || 0;
     const nb = parseInt(b[0].replace(/\D+/g,''),10) || 0;
@@ -223,10 +286,96 @@ function renderCorps(corps){
       <div class="corp-title">${name}</div>
       <div class="row"><span class="k">План</span><span>${fmt(v.plan)}</span></div>
       <div class="row"><span class="k">Факт</span><span>${fmt(v.fact)}</span></div>
-      <div class="row"><span class="k">Выполнение</span><span class="${cls(perf)}">${pct(perf)}</span></div>
+      <div class="row"><span class="k">Выполнение</span><span class="${perfClass(perf)}">${pct(perf)}</span></div>
       <div class="row"><span class="k">Брак</span><span>${fmt(v.scrap)} (${pct(scrapPct)})</span></div>
     </div>`;
   }).join('');
+}
+
+// --- графики ---
+function renderCharts(corps){
+  const labels = [];
+  const facts = [];
+  const scraps = [];
+
+  const entries = Object.entries(corps).sort((a,b) => {
+    const na = parseInt(a[0].replace(/\D+/g,''),10) || 0;
+    const nb = parseInt(b[0].replace(/\D+/g,''),10) || 0;
+    return na - nb;
+  });
+
+  entries.forEach(([name,v]) => {
+    labels.push(name);
+    facts.push(v.fact);
+    scraps.push(v.scrap);
+  });
+
+  if(chartOutput) chartOutput.destroy();
+  if(chartScrap) chartScrap.destroy();
+
+  chartOutput = new Chart(document.getElementById('chartOutput'), {
+    type:'bar',
+    data:{
+      labels,
+      datasets:[{
+        label:'Факт, коробки',
+        data:facts,
+        backgroundColor:'rgba(37, 99, 235, .85)',
+        borderRadius:8,
+        borderSkipped:false
+      }]
+    },
+    options:{
+      responsive:true,
+      maintainAspectRatio:false,
+      plugins:{
+        legend:{display:false}
+      },
+      scales:{
+        x:{
+          grid:{display:false},
+          ticks:{font:{size:10}}
+        },
+        y:{
+          beginAtZero:true,
+          ticks:{font:{size:10}},
+          grid:{color:'rgba(148,163,184,.35)'}
+        }
+      }
+    }
+  });
+
+  chartScrap = new Chart(document.getElementById('chartScrap'), {
+    type:'bar',
+    data:{
+      labels,
+      datasets:[{
+        label:'Брак, коробки',
+        data:scraps,
+        backgroundColor:'rgba(220, 38, 38, .85)',
+        borderRadius:8,
+        borderSkipped:false
+      }]
+    },
+    options:{
+      responsive:true,
+      maintainAspectRatio:false,
+      plugins:{
+        legend:{display:false}
+      },
+      scales:{
+        x:{
+          grid:{display:false},
+          ticks:{font:{size:10}}
+        },
+        y:{
+          beginAtZero:true,
+          ticks:{font:{size:10}},
+          grid:{color:'rgba(148,163,184,.35)'}
+        }
+      }
+    }
+  });
 }
 
 // --- основная загрузка ---
@@ -244,7 +393,7 @@ async function load(){
     const total = summarizeAll(rows);
 
     els.kpiPct.textContent = pct(total.perfPct);
-    els.kpiPct.className = 'num ' + cls(total.perfPct);
+    els.kpiPct.className = perfClass(total.perfPct);
 
     const scrapText = total.fact
       ? `, брак ${fmt(total.scrap)} (${pct(total.scrapPct)})`
@@ -252,7 +401,9 @@ async function load(){
     els.kpiSub.textContent =
       `${fmt(total.fact)} из ${fmt(total.plan)} коробок${scrapText}`;
 
+    renderMonth(rows);
     renderCorps(total.corps);
+    renderCharts(total.corps);
   }catch(e){
     els.rootCard.innerHTML =
       `<div style="font-size:13px;color:#b42318">Ошибка загрузки: ${e.message}</div>`;
