@@ -106,7 +106,7 @@
       margin:4px 0 4px;
     }
     .chart-wrap{
-      height:132px;
+      height:140px;
     }
   </style>
 </head>
@@ -121,13 +121,13 @@
 
     <div class="corps" id="corps"></div>
 
-    <div class="chart-title" id="chartTitle">Динамика по корпусам</div>
+    <div class="chart-title" id="chartTitle">Корпуса — выполнение за сегодня</div>
     <div class="chart-wrap" id="chartWrap"><canvas id="chart"></canvas></div>
   </div>
 </div>
 
 <script>
-// ТВОЯ опубликованная CSV-ссылка
+// опубликованная CSV Google Sheets
 const CSV_URL = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vTjo8Kl0hQ0mNl72rKCvl1PkhwvGBpMF5zPz9H38wlPB_SU2xB7C9oLUWsUlidrc2bBUASvwP0L4XCK/pub?gid=468373869&single=true&output=csv';
 
 const els = {
@@ -141,7 +141,7 @@ const els = {
 
 let chart;
 
-// --- CSV-парсер ---
+// парсер CSV
 function parseCSV(text){
   const rows = [];
   let row = [], field = '', q = false;
@@ -179,7 +179,7 @@ const fmt = n => new Intl.NumberFormat('ru-RU',{maximumFractionDigits:0}).format
 const pct = v => Number.isFinite(v) ? `${v.toFixed(1)}%` : '—';
 const cls = p => p >= 100 ? 'ok' : p >= 90 ? 'warnc' : 'bad';
 
-// --- Маппинг строк ---
+// маппинг строк
 function mapRows(raw){
   if(!raw.length) return [];
   const h = raw[0].map(nk);
@@ -188,21 +188,17 @@ function mapRows(raw){
     date: idx(['дата']),
     corpus: idx(['корпус']),
     plan: idx(['план_коробки','план коробки','план']),
-    fact: idx(['факт_коробки','факт коробки','факт']),
-    downtime: idx(['простой_мин','простой мин','простой']),
-    scrap: idx(['брак_коробки','брак коробки','брак'])
+    fact: idx(['факт_коробки','факт коробки','факт'])
   };
   return raw.slice(1).map(r => ({
     date: r[m.date] || '',
     corpus: r[m.corpus] || '—',
     plan: num(r[m.plan]),
-    fact: num(r[m.fact]),
-    downtime: num(r[m.downtime]),
-    scrap: num(r[m.scrap])
+    fact: num(r[m.fact])
   })).filter(r => r.date);
 }
 
-// --- Группировка по дате ---
+// группировка по дате
 function group(rows){
   const g = new Map();
   rows.forEach(r => {
@@ -212,7 +208,7 @@ function group(rows){
   return [...g.entries()].sort((a,b) => String(a[0]).localeCompare(String(b[0])));
 }
 
-// --- Суммарные показатели по последней дате ---
+// суммарные показатели последней даты
 function sum(rows){
   const s = {plan:0,fact:0,corps:{}};
   rows.forEach(r => {
@@ -227,7 +223,7 @@ function sum(rows){
   return s;
 }
 
-// --- Рендер корпусов ---
+// карточки корпусов
 function renderCorps(corps){
   els.corps.innerHTML = Object.entries(corps).map(([name,v]) => {
     const p = v.plan ? v.fact / v.plan * 100 : 0;
@@ -240,19 +236,19 @@ function renderCorps(corps){
   }).join('');
 }
 
-// --- Рендер графика ---
-function renderChart(groups){
+// горизонтальная диаграмма
+function renderChart(corps){
   const labels = [];
-  const corpSeries = {
-    '1': [],
-    '2': [],
-    '3': []
-  };
+  const data = [];
 
-  const last7 = groups.slice(-7);
+  Object.entries(corps).forEach(([name,v]) => {
+    if(!v.plan) return;
+    const p = v.fact / v.plan * 100;
+    labels.push(name);
+    data.push(p);
+  });
 
-  if(last7.length < 2){
-    // мало данных — график не показываем
+  if(!labels.length){
     if(chart){ chart.destroy(); chart = null; }
     els.chartWrap.style.display = 'none';
     els.chartTitle.style.display = 'none';
@@ -262,83 +258,39 @@ function renderChart(groups){
     els.chartTitle.style.display = '';
   }
 
-  last7.forEach(([d,rows]) => {
-    labels.push(d);
-    const byCorp = {};
-    rows.forEach(r => {
-      const k = String(r.corpus);
-      byCorp[k] = byCorp[k] || {plan:0,fact:0};
-      byCorp[k].plan += r.plan;
-      byCorp[k].fact += r.fact;
-    });
-    ['1','2','3'].forEach(c=>{
-      const cData = byCorp[c] || {plan:0,fact:0};
-      corpSeries[c].push(cData.plan ? cData.fact / cData.plan * 100 : 0);
-    });
-  });
-
-  // убираем корпуса без данных
-  const datasets = [];
-  const hasValues = arr => arr.some(v => v !== 0);
-
-  if(hasValues(corpSeries['1'])){
-    datasets.push({
-      label:'Корпус 1',
-      data:corpSeries['1'],
-      borderColor:'rgba(31,111,235,.95)',
-      backgroundColor:'rgba(31,111,235,.12)',
-      tension:.25,
-      fill:false
-    });
-  }
-  if(hasValues(corpSeries['2'])){
-    datasets.push({
-      label:'Корпус 2',
-      data:corpSeries['2'],
-      borderColor:'rgba(47,180,84,.95)',
-      backgroundColor:'rgba(47,180,84,.12)',
-      tension:.25,
-      fill:false
-    });
-  }
-  if(hasValues(corpSeries['3'])){
-    datasets.push({
-      label:'Корпус 3',
-      data:corpSeries['3'],
-      borderColor:'rgba(180,83,9,.95)',
-      backgroundColor:'rgba(180,83,9,.12)',
-      tension:.25,
-      fill:false
-    });
-  }
-
-  if(!datasets.length){
-    if(chart){ chart.destroy(); chart = null; }
-    els.chartWrap.style.display = 'none';
-    els.chartTitle.style.display = 'none';
-    return;
-  }
-
   if(chart) chart.destroy();
+
   chart = new Chart(document.getElementById('chart'), {
-    type:'line',
-    data:{ labels, datasets },
+    type:'bar',
+    data:{
+      labels,
+      datasets:[{
+        label:'Выполнение, %',
+        data,
+        borderRadius:8,
+        borderSkipped:false,
+        backgroundColor: ctx => {
+          const v = ctx.raw ?? 0;
+          if(v >= 100) return 'rgba(47,180,84,.9)';
+          if(v >= 90)  return 'rgba(183,110,0,.9)';
+          return 'rgba(180,35,24,.9)';
+        }
+      }]
+    },
     options:{
+      indexAxis:'y',
       responsive:true,
       maintainAspectRatio:false,
       plugins:{
-        legend:{
-          display:true,
-          position:'bottom',
-          labels:{boxWidth:10,font:{size:11}}
+        legend:{display:false},
+        tooltip:{
+          callbacks:{
+            label: ctx => `${ctx.raw.toFixed(1)}%`
+          }
         }
       },
       scales:{
         x:{
-          grid:{display:false},
-          ticks:{maxRotation:0,font:{size:10}}
-        },
-        y:{
           beginAtZero:true,
           suggestedMax:110,
           ticks:{
@@ -346,13 +298,17 @@ function renderChart(groups){
             font:{size:10}
           },
           grid:{color:'rgba(148,163,184,.35)'}
+        },
+        y:{
+          ticks:{font:{size:10}},
+          grid:{display:false}
         }
       }
     }
   });
 }
 
-// --- Основная загрузка ---
+// основная загрузка
 async function load(){
   try{
     els.kpiSub.textContent = 'Загрузка…';
@@ -370,7 +326,7 @@ async function load(){
     els.kpiSub.textContent = `${fmt(s.fact)} из ${fmt(s.plan)} коробок`;
 
     renderCorps(s.corps);
-    renderChart(groups);
+    renderChart(s.corps);
   }catch(e){
     els.rootCard.innerHTML =
       `<div style="font-size:13px;color:#b42318">Ошибка загрузки: ${e.message}</div>`;
@@ -378,7 +334,7 @@ async function load(){
 }
 
 load();
-setInterval(load, 300000); // каждые 5 минут
+setInterval(load, 300000);
 </script>
 </body>
 </html>
