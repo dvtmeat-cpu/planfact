@@ -28,9 +28,14 @@
       background:var(--bg);
       color:var(--text);
       font:15px/1.45 Inter,system-ui,sans-serif;
+      min-height:100vh;
+      display:flex;
+      align-items:flex-start;
+      justify-content:center;
     }
     .shell{
       max-width:412px;
+      width:100%;
       margin:0 auto;
       padding:8px;
     }
@@ -82,6 +87,7 @@
       letter-spacing:.08em;
       color:var(--muted);
       margin-bottom:4px;
+      font-weight:600;
     }
     .row{
       display:flex;
@@ -107,6 +113,46 @@
     }
     .chart-wrap{
       height:140px;
+      position:relative;
+    }
+    .chart-wrap canvas{
+      width:100% !important;
+      height:100% !important;
+    }
+    .last-update{
+      text-align:center;
+      font-size:10px;
+      color:var(--muted);
+      margin-top:8px;
+      padding-top:8px;
+      border-top:1px solid var(--border);
+    }
+    .error-msg{
+      font-size:13px;
+      color:#b42318;
+      text-align:center;
+      padding:20px 10px;
+    }
+    .error-msg small{
+      display:block;
+      margin-top:8px;
+      font-size:11px;
+      color:#66707a;
+    }
+    .loader{
+      text-align:center;
+      padding:20px 0;
+      color:var(--muted);
+    }
+    .loader::after{
+      content:'...';
+      animation: dots 1.5s steps(4) infinite;
+    }
+    @keyframes dots{
+      0%{content:''}
+      25%{content:'.'}
+      50%{content:'..'}
+      75%{content:'...'}
     }
   </style>
 </head>
@@ -116,18 +162,18 @@
     <div class="total">
       <div class="label">Общий процент выполнения плана</div>
       <div class="num" id="kpiPct">—</div>
-      <div class="sub" id="kpiSub">Загрузка…</div>
+      <div class="sub" id="kpiSub">Загрузка<span class="loader"></span></div>
     </div>
 
     <div class="corps" id="corps"></div>
 
-    <div class="chart-title" id="chartTitle">Корпуса — выполнение за сегодня</div>
+    <div class="chart-title" id="chartTitle">Корпуса — выполнение за последнюю дату</div>
     <div class="chart-wrap" id="chartWrap"><canvas id="chart"></canvas></div>
+    <div class="last-update" id="lastUpdate">—</div>
   </div>
 </div>
 
 <script>
-// опубликованная CSV Google Sheets
 const CSV_URL = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vTjo8Kl0hQ0mNl72rKCvl1PkhwvGBpMF5zPz9H38wlPB_SU2xB7C9oLUWsUlidrc2bBUASvwP0L4XCK/pub?gid=468373869&single=true&output=csv';
 
 const els = {
@@ -136,12 +182,12 @@ const els = {
   kpiSub: document.getElementById('kpiSub'),
   corps: document.getElementById('corps'),
   chartWrap: document.getElementById('chartWrap'),
-  chartTitle: document.getElementById('chartTitle')
+  chartTitle: document.getElementById('chartTitle'),
+  lastUpdate: document.getElementById('lastUpdate')
 };
 
-let chart;
+let chart = null;
 
-// парсер CSV
 function parseCSV(text){
   const rows = [];
   let row = [], field = '', q = false;
@@ -155,7 +201,9 @@ function parseCSV(text){
     } else if((c === '\n' || c === '\r') && !q){
       if(c === '\r' && n === '\n') i++;
       row.push(field);
-      rows.push(row);
+      if(row.some(v => v.trim() !== '')){
+        rows.push(row);
+      }
       row = [];
       field = '';
     } else {
@@ -164,177 +212,345 @@ function parseCSV(text){
   }
   if(field.length || row.length){
     row.push(field);
-    rows.push(row);
+    if(row.some(v => v.trim() !== '')){
+      rows.push(row);
+    }
   }
-  return rows.filter(r => r.some(v => String(v).trim() !== ''));
+  return rows;
 }
 
-const nk = s => String(s || '').trim().toLowerCase().replace(/ё/g,'е');
-const num = v => {
-  const s = String(v ?? '').replace(/\s+/g,'').replace(',', '.');
-  const m = s.match(/-?\d+(?:\.\d+)?/);
-  return m ? Number(m[0]) : 0;
-};
-const fmt = n => new Intl.NumberFormat('ru-RU',{maximumFractionDigits:0}).format(Math.round(n || 0));
-const pct = v => Number.isFinite(v) ? `${v.toFixed(1)}%` : '—';
-const cls = p => p >= 100 ? 'ok' : p >= 90 ? 'warnc' : 'bad';
+function normalize(str){
+  return String(str || '').trim().toLowerCase().replace(/ё/g,'е').replace(/\s+/g,' ');
+}
 
-// маппинг строк
+function findHeaderIndex(headers, variants){
+  const normalizedHeaders = headers.map(h => normalize(h));
+  for(const v of variants){
+    const nv = normalize(v);
+    const idx = normalizedHeaders.findIndex(h => h === nv || h.includes(nv) || nv.includes(h));
+    if(idx !== -1) return idx;
+  }
+  return -1;
+}
+
+function parseNumber(val){
+  if(val === undefined || val === null || val === '') return 0;
+  const s = String(val).replace(/\s+/g,'').replace(',', '.');
+  const match = s.match(/-?\d+(?:\.\d+)?/);
+  return match ? Number(match[0]) : 0;
+}
+
+function formatNumber(n){
+  return new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 0 }).format(Math.round(n || 0));
+}
+
+function formatPercent(v){
+  return Number.isFinite(v) ? v.toFixed(1) + '%' : '—';
+}
+
+function getColorClass(pct){
+  if(pct >= 100) return 'ok';
+  if(pct >= 90) return 'warnc';
+  return 'bad';
+}
+
+function getBarColor(pct){
+  if(pct >= 100) return 'rgba(47,180,84,.9)';
+  if(pct >= 90) return 'rgba(183,110,0,.9)';
+  return 'rgba(180,35,24,.9)';
+}
+
 function mapRows(raw){
   if(!raw.length) return [];
-  const h = raw[0].map(nk);
-  const idx = vars => h.findIndex(x => vars.some(v => x.includes(v)));
-  const m = {
-    date: idx(['дата']),
-    corpus: idx(['корпус']),
-    plan: idx(['план_коробки','план коробки','план']),
-    fact: idx(['факт_коробки','факт коробки','факт'])
-  };
-  return raw.slice(1).map(r => ({
-    date: r[m.date] || '',
-    corpus: r[m.corpus] || '—',
-    plan: num(r[m.plan]),
-    fact: num(r[m.fact])
-  })).filter(r => r.date);
+  
+  const headers = raw[0].map(h => String(h || '').trim());
+  
+  const dateIdx = findHeaderIndex(headers, ['дата', 'date']);
+  const corpusIdx = findHeaderIndex(headers, ['корпус', 'corpus', 'корп']);
+  const planIdx = findHeaderIndex(headers, ['план коробки', 'план_коробки', 'план', 'plan']);
+  const factIdx = findHeaderIndex(headers, ['факт коробки', 'факт_коробки', 'факт', 'fact']);
+  
+  // Проверяем, что нашли все нужные колонки
+  if(dateIdx === -1 || corpusIdx === -1 || planIdx === -1 || factIdx === -1){
+    console.warn('Не найдены все колонки:', {
+      date: dateIdx, corpus: corpusIdx, plan: planIdx, fact: factIdx,
+      headers: headers.slice(0, 5)
+    });
+    return [];
+  }
+  
+  const result = [];
+  for(let i = 1; i < raw.length; i++){
+    const row = raw[i];
+    const date = String(row[dateIdx] || '').trim();
+    const corpus = String(row[corpusIdx] || '').trim();
+    const plan = parseNumber(row[planIdx]);
+    const fact = parseNumber(row[factIdx]);
+    
+    if(date && corpus && (plan > 0 || fact > 0)){
+      result.push({ date, corpus, plan, fact });
+    }
+  }
+  
+  return result;
 }
 
-// группировка по дате
-function group(rows){
-  const g = new Map();
+function groupByDate(rows){
+  const groups = new Map();
   rows.forEach(r => {
-    if(!g.has(r.date)) g.set(r.date, []);
-    g.get(r.date).push(r);
+    const key = r.date;
+    if(!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(r);
   });
-  return [...g.entries()].sort((a,b) => String(a[0]).localeCompare(String(b[0])));
+  return Array.from(groups.entries()).sort((a, b) => {
+    // Сортируем как строки (формат DD.MM.YYYY или YYYY-MM-DD)
+    return a[0].localeCompare(b[0]);
+  });
 }
 
-// суммарные показатели последней даты
-function sum(rows){
-  const s = {plan:0,fact:0,corps:{}};
+function aggregate(rows){
+  const summary = { plan: 0, fact: 0, corps: {} };
+  
   rows.forEach(r => {
-    s.plan += r.plan;
-    s.fact += r.fact;
-    const k = `Корпус ${r.corpus}`;
-    s.corps[k] = s.corps[k] || {plan:0,fact:0};
-    s.corps[k].plan += r.plan;
-    s.corps[k].fact += r.fact;
+    summary.plan += r.plan;
+    summary.fact += r.fact;
+    
+    const key = 'Корпус ' + r.corpus;
+    if(!summary.corps[key]){
+      summary.corps[key] = { plan: 0, fact: 0 };
+    }
+    summary.corps[key].plan += r.plan;
+    summary.corps[key].fact += r.fact;
   });
-  s.pct = s.plan ? s.fact / s.plan * 100 : 0;
-  return s;
+  
+  summary.percent = summary.plan > 0 ? (summary.fact / summary.plan) * 100 : 0;
+  return summary;
 }
 
-// карточки корпусов
-function renderCorps(corps){
-  els.corps.innerHTML = Object.entries(corps).map(([name,v]) => {
-    const p = v.plan ? v.fact / v.plan * 100 : 0;
-    return `<div class="corp-card">
+function renderCorps(corpsData){
+  const container = els.corps;
+  container.innerHTML = '';
+  
+  const entries = Object.entries(corpsData);
+  if(!entries.length){
+    container.innerHTML = '<div style="text-align:center;color:var(--muted);padding:10px;font-size:13px;">Нет данных по корпусам</div>';
+    return;
+  }
+  
+  entries.forEach(([name, data]) => {
+    const pct = data.plan > 0 ? (data.fact / data.plan) * 100 : 0;
+    const div = document.createElement('div');
+    div.className = 'corp-card';
+    div.innerHTML = `
       <div class="corp-title">${name}</div>
-      <div class="row"><span class="k">План</span><span>${fmt(v.plan)}</span></div>
-      <div class="row"><span class="k">Факт</span><span>${fmt(v.fact)}</span></div>
-      <div class="row"><span class="k">Выполнение</span><span class="${cls(p)}">${pct(p)}</span></div>
-    </div>`;
-  }).join('');
+      <div class="row"><span class="k">План</span><span>${formatNumber(data.plan)}</span></div>
+      <div class="row"><span class="k">Факт</span><span>${formatNumber(data.fact)}</span></div>
+      <div class="row"><span class="k">Выполнение</span><span class="${getColorClass(pct)}">${formatPercent(pct)}</span></div>
+    `;
+    container.appendChild(div);
+  });
 }
 
-// горизонтальная диаграмма
-function renderChart(corps){
+function renderChart(corpsData){
   const labels = [];
   const data = [];
-
-  Object.entries(corps).forEach(([name,v]) => {
-    if(!v.plan) return;
-    const p = v.fact / v.plan * 100;
-    labels.push(name);
-    data.push(p);
+  const colors = [];
+  
+  Object.entries(corpsData).forEach(([name, v]) => {
+    if(v.plan > 0){
+      const pct = (v.fact / v.plan) * 100;
+      labels.push(name);
+      data.push(Math.min(pct, 150)); // ограничиваем для читаемости
+      colors.push(getBarColor(pct));
+    }
   });
-
+  
   if(!labels.length){
     if(chart){ chart.destroy(); chart = null; }
     els.chartWrap.style.display = 'none';
     els.chartTitle.style.display = 'none';
     return;
-  } else {
-    els.chartWrap.style.display = '';
-    els.chartTitle.style.display = '';
   }
-
-  if(chart) chart.destroy();
-
-  chart = new Chart(document.getElementById('chart'), {
-    type:'bar',
-    data:{
-      labels,
-      datasets:[{
-        label:'Выполнение, %',
-        data,
-        borderRadius:8,
-        borderSkipped:false,
-        backgroundColor: ctx => {
-          const v = ctx.raw ?? 0;
-          if(v >= 100) return 'rgba(47,180,84,.9)';
-          if(v >= 90)  return 'rgba(183,110,0,.9)';
-          return 'rgba(180,35,24,.9)';
-        }
+  
+  els.chartWrap.style.display = '';
+  els.chartTitle.style.display = '';
+  
+  if(chart){
+    chart.destroy();
+    chart = null;
+  }
+  
+  const ctx = document.getElementById('chart').getContext('2d');
+  chart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: labels,
+      datasets: [{
+        label: 'Выполнение, %',
+        data: data,
+        backgroundColor: colors,
+        borderRadius: 6,
+        borderSkipped: false,
+        maxBarThickness: 32,
+        minBarLength: 4
       }]
     },
-    options:{
-      indexAxis:'y',
-      responsive:true,
-      maintainAspectRatio:false,
-      plugins:{
-        legend:{display:false},
-        tooltip:{
-          callbacks:{
-            label: ctx => `${ctx.raw.toFixed(1)}%`
+    options: {
+      indexAxis: 'y',
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: function(context) {
+              const actualPct = Object.values(corpsData)[context.dataIndex]?.plan > 0 
+                ? (Object.values(corpsData)[context.dataIndex].fact / Object.values(corpsData)[context.dataIndex].plan) * 100
+                : context.raw;
+              return actualPct.toFixed(1) + '%';
+            }
           }
         }
       },
-      scales:{
-        x:{
-          beginAtZero:true,
-          suggestedMax:110,
-          ticks:{
-            callback:v => v + '%',
-            font:{size:10}
+      scales: {
+        x: {
+          beginAtZero: true,
+          max: 110,
+          ticks: {
+            callback: function(v) { return v + '%'; },
+            font: { size: 10 }
           },
-          grid:{color:'rgba(148,163,184,.35)'}
+          grid: { color: 'rgba(148,163,184,.25)' }
         },
-        y:{
-          ticks:{font:{size:10}},
-          grid:{display:false}
+        y: {
+          ticks: { 
+            font: { size: 10, weight: '500' },
+            maxRotation: 0
+          },
+          grid: { display: false }
         }
       }
     }
   });
 }
 
-// основная загрузка
-async function load(){
-  try{
-    els.kpiSub.textContent = 'Загрузка…';
-    const res = await fetch(CSV_URL + '&ts=' + Date.now());
-    if(!res.ok) throw new Error('HTTP ' + res.status);
-    const rows = mapRows(parseCSV(await res.text()));
-    if(!rows.length) throw new Error('CSV пуст или не распознан');
+function updateLastUpdate() {
+  const now = new Date();
+  const timeStr = now.toLocaleString('ru-RU', {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit'
+  });
+  els.lastUpdate.textContent = 'Обновлено: ' + timeStr;
+}
 
-    const groups = group(rows);
-    const latest = groups[groups.length - 1]?.[1] || [];
-    const s = sum(latest);
-
-    els.kpiPct.textContent = pct(s.pct);
-    els.kpiPct.className = 'num ' + cls(s.pct);
-    els.kpiSub.textContent = `${fmt(s.fact)} из ${fmt(s.plan)} коробок`;
-
-    renderCorps(s.corps);
-    renderChart(s.corps);
-  }catch(e){
-    els.rootCard.innerHTML =
-      `<div style="font-size:13px;color:#b42318">Ошибка загрузки: ${e.message}</div>`;
+async function loadData(){
+  const kpiPct = els.kpiPct;
+  const kpiSub = els.kpiSub;
+  
+  try {
+    kpiSub.innerHTML = 'Загрузка<span class="loader"></span>';
+    
+    // Добавляем timestamp для обхода кэша
+    const url = CSV_URL + (CSV_URL.includes('?') ? '&' : '?') + 't=' + Date.now();
+    const response = await fetch(url, {
+      cache: 'no-cache',
+      headers: { 'Cache-Control': 'no-cache' }
+    });
+    
+    if(!response.ok){
+      throw new Error('HTTP ' + response.status + ': ' + response.statusText);
+    }
+    
+    const text = await response.text();
+    
+    if(!text || text.trim().length < 10){
+      throw new Error('Получен пустой ответ от сервера');
+    }
+    
+    const rawRows = parseCSV(text);
+    if(!rawRows.length){
+      throw new Error('CSV не содержит строк');
+    }
+    
+    const dataRows = mapRows(rawRows);
+    if(!dataRows.length){
+      throw new Error('Не удалось распознать данные. Проверьте структуру CSV.');
+    }
+    
+    const grouped = groupByDate(dataRows);
+    if(!grouped.length){
+      throw new Error('Нет данных за доступные даты');
+    }
+    
+    // Берем последнюю дату
+    const latestDate = grouped[grouped.length - 1];
+    const latestRows = latestDate[1];
+    const summary = aggregate(latestRows);
+    
+    // Обновляем KPI
+    const percent = summary.percent;
+    kpiPct.textContent = formatPercent(percent);
+    kpiPct.className = 'num ' + getColorClass(percent);
+    kpiSub.textContent = formatNumber(summary.fact) + ' из ' + formatNumber(summary.plan) + ' коробок';
+    
+    // Рендерим карточки корпусов
+    renderCorps(summary.corps);
+    
+    // Рендерим диаграмму
+    renderChart(summary.corps);
+    
+    // Обновляем время
+    updateLastUpdate();
+    
+  } catch(error) {
+    console.error('Ошибка загрузки:', error);
+    kpiPct.textContent = '⚠️';
+    kpiPct.className = 'num bad';
+    kpiSub.textContent = 'Ошибка';
+    
+    els.corps.innerHTML = `
+      <div class="error-msg">
+        Не удалось загрузить данные
+        <small>${error.message}</small>
+        <small style="margin-top:4px;">Попытка перезагрузки через 30 секунд...</small>
+      </div>
+    `;
+    
+    els.chartWrap.style.display = 'none';
+    els.chartTitle.style.display = 'none';
+    
+    // Планируем повторную попытку через 30 секунд
+    clearTimeout(window._retryTimeout);
+    window._retryTimeout = setTimeout(loadData, 30000);
   }
 }
 
-load();
-setInterval(load, 300000);
+// Первичная загрузка
+loadData();
+
+// Автообновление каждые 5 минут
+setInterval(loadData, 300000);
+
+// Дополнительная проверка: если вкладка была неактивна, обновляем при возврате
+document.addEventListener('visibilitychange', function() {
+  if(!document.hidden){
+    // Проверяем, не устарели ли данные (больше 6 минут)
+    const lastUpdateText = els.lastUpdate.textContent;
+    if(lastUpdateText && lastUpdateText !== '—'){
+      const match = lastUpdateText.match(/(\d{2}):(\d{2}):(\d{2})/);
+      if(match){
+        const now = new Date();
+        const then = new Date();
+        then.setHours(parseInt(match[1]), parseInt(match[2]), parseInt(match[3]));
+        // Если прошло больше 6 минут, обновляем
+        if((now - then) > 360000){
+          loadData();
+        }
+      }
+    }
+  }
+});
 </script>
 </body>
 </html>
