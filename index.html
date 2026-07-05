@@ -101,7 +101,7 @@
 <div class="shell">
   <div class="card" id="rootCard">
     <div class="total">
-      <div class="label">Общий процент выполнения плана</div>
+      <div class="label">Общий процент выполнения плана (все дни)</div>
       <div class="num" id="kpiPct">—</div>
       <div class="sub" id="kpiSub">Загрузка…</div>
     </div>
@@ -121,6 +121,7 @@ const els = {
   corps: document.getElementById('corps')
 };
 
+// --- утилиты ---
 function parseCSV(text){
   const rows = [];
   let row = [], field = '', q = false;
@@ -158,7 +159,7 @@ const fmt = n => new Intl.NumberFormat('ru-RU',{maximumFractionDigits:0}).format
 const pct = v => Number.isFinite(v) ? `${v.toFixed(1)}%` : '—';
 const cls = p => p >= 100 ? 'ok' : p >= 90 ? 'warnc' : 'bad';
 
-// парсим строки в объект
+// --- читаем строки ---
 function mapRows(raw){
   if(!raw.length) return [];
   const h = raw[0].map(nk);
@@ -178,67 +179,57 @@ function mapRows(raw){
     plan: num(r[m.plan]),
     fact: num(r[m.fact]),
     scrap: num(r[m.scrap])
-  })).filter(r => r.date);
+  })).filter(r => r.corpus && r.plan && r.fact);
 }
 
-// группировка по дате
-function groupByDate(rows){
-  const g = new Map();
-  rows.forEach(r => {
-    if(!g.has(r.date)) g.set(r.date, []);
-    g.get(r.date).push(r);
-  });
-  return [...g.entries()].sort((a,b) => String(a[0]).localeCompare(String(b[0])));
-}
-
-// суммы по последней дате
-function summarize(rows){
-  const s = {
-    plan:0,
-    fact:0,
-    scrap:0,
-    corps:{}
-  };
+// --- агрегируем по всем датам ---
+function summarizeAll(rows){
+  const total = { plan:0, fact:0, scrap:0, corps:{} };
 
   rows.forEach(r => {
-    s.plan += r.plan;
-    s.fact += r.fact;
-    s.scrap += r.scrap;
+    total.plan  += r.plan;
+    total.fact  += r.fact;
+    total.scrap += r.scrap;
 
     const key = `Корпус ${r.corpus}`;
-    if(!s.corps[key]){
-      s.corps[key] = { plan:0, fact:0, scrap:0 };
+    if(!total.corps[key]){
+      total.corps[key] = { plan:0, fact:0, scrap:0 };
     }
-    s.corps[key].plan  += r.plan;
-    s.corps[key].fact  += r.fact;
-    s.corps[key].scrap += r.scrap;
+    total.corps[key].plan  += r.plan;
+    total.corps[key].fact  += r.fact;
+    total.corps[key].scrap += r.scrap;
   });
 
-  s.totalPct = s.plan ? s.fact / s.plan * 100 : 0;
-  s.scrapPct = s.fact ? s.scrap / s.fact * 100 : 0;
+  total.perfPct  = total.plan ? total.fact / total.plan * 100 : 0;
+  total.scrapPct = total.fact ? total.scrap / total.fact * 100 : 0;
 
-  return s;
+  return total;
 }
 
-// рендер корпусов
+// --- вывод корпусов ---
 function renderCorps(corps){
-  els.corps.innerHTML = Object.entries(corps)
-    .map(([name,v]) => {
-      const perf = v.plan ? v.fact / v.plan * 100 : 0;
-      const scrapPct = v.fact ? v.scrap / v.fact * 100 : 0;
+  // сортируем по номеру корпуса
+  const entries = Object.entries(corps).sort((a,b) => {
+    const na = parseInt(a[0].replace(/\D+/g,''),10) || 0;
+    const nb = parseInt(b[0].replace(/\D+/g,''),10) || 0;
+    return na - nb;
+  });
 
-      return `<div class="corp-card">
-        <div class="corp-title">${name}</div>
-        <div class="row"><span class="k">План</span><span>${fmt(v.plan)}</span></div>
-        <div class="row"><span class="k">Факт</span><span>${fmt(v.fact)}</span></div>
-        <div class="row"><span class="k">Выполнение</span><span class="${cls(perf)}">${pct(perf)}</span></div>
-        <div class="row"><span class="k">Брак</span><span>${pct(scrapPct)}</span></div>
-      </div>`;
-    })
-    .join('');
+  els.corps.innerHTML = entries.map(([name,v]) => {
+    const perf = v.plan ? v.fact / v.plan * 100 : 0;
+    const scrapPct = v.fact ? v.scrap / v.fact * 100 : 0;
+
+    return `<div class="corp-card">
+      <div class="corp-title">${name}</div>
+      <div class="row"><span class="k">План</span><span>${fmt(v.plan)}</span></div>
+      <div class="row"><span class="k">Факт</span><span>${fmt(v.fact)}</span></div>
+      <div class="row"><span class="k">Выполнение</span><span class="${cls(perf)}">${pct(perf)}</span></div>
+      <div class="row"><span class="k">Брак</span><span>${fmt(v.scrap)} (${pct(scrapPct)})</span></div>
+    </div>`;
+  }).join('');
 }
 
-// основная загрузка
+// --- основная загрузка ---
 async function load(){
   try{
     els.kpiSub.textContent = 'Загрузка…';
@@ -250,17 +241,18 @@ async function load(){
     const rows = mapRows(rawRows);
     if(!rows.length) throw new Error('CSV пуст или не распознан');
 
-    const grouped = groupByDate(rows);
-    const latestRows = grouped[grouped.length - 1]?.[1] || [];
-    const s = summarize(latestRows);
+    const total = summarizeAll(rows);
 
-    els.kpiPct.textContent = pct(s.totalPct);
-    els.kpiPct.className = 'num ' + cls(s.totalPct);
+    els.kpiPct.textContent = pct(total.perfPct);
+    els.kpiPct.className = 'num ' + cls(total.perfPct);
 
-    const scrapText = s.fact ? `, брак ${pct(s.scrapPct)}` : '';
-    els.kpiSub.textContent = `${fmt(s.fact)} из ${fmt(s.plan)} коробок${scrapText}`;
+    const scrapText = total.fact
+      ? `, брак ${fmt(total.scrap)} (${pct(total.scrapPct)})`
+      : '';
+    els.kpiSub.textContent =
+      `${fmt(total.fact)} из ${fmt(total.plan)} коробок${scrapText}`;
 
-    renderCorps(s.corps);
+    renderCorps(total.corps);
   }catch(e){
     els.rootCard.innerHTML =
       `<div style="font-size:13px;color:#b42318">Ошибка загрузки: ${e.message}</div>`;
