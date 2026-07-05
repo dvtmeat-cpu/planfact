@@ -154,6 +154,16 @@
       50%{content:'..'}
       75%{content:'...'}
     }
+    .debug-info{
+      font-size:10px;
+      color:var(--muted);
+      background:var(--surface2);
+      padding:6px 8px;
+      border-radius:6px;
+      margin-top:6px;
+      word-break:break-all;
+      display:none;
+    }
   </style>
 </head>
 <body>
@@ -170,6 +180,7 @@
     <div class="chart-title" id="chartTitle">Корпуса — выполнение за последнюю дату</div>
     <div class="chart-wrap" id="chartWrap"><canvas id="chart"></canvas></div>
     <div class="last-update" id="lastUpdate">—</div>
+    <div class="debug-info" id="debugInfo"></div>
   </div>
 </div>
 
@@ -183,10 +194,12 @@ const els = {
   corps: document.getElementById('corps'),
   chartWrap: document.getElementById('chartWrap'),
   chartTitle: document.getElementById('chartTitle'),
-  lastUpdate: document.getElementById('lastUpdate')
+  lastUpdate: document.getElementById('lastUpdate'),
+  debugInfo: document.getElementById('debugInfo')
 };
 
 let chart = null;
+let debugMode = false; // Включите для отладки
 
 function parseCSV(text){
   const rows = [];
@@ -265,31 +278,78 @@ function mapRows(raw){
   
   const headers = raw[0].map(h => String(h || '').trim());
   
-  const dateIdx = findHeaderIndex(headers, ['дата', 'date']);
-  const corpusIdx = findHeaderIndex(headers, ['корпус', 'corpus', 'корп']);
-  const planIdx = findHeaderIndex(headers, ['план коробки', 'план_коробки', 'план', 'plan']);
-  const factIdx = findHeaderIndex(headers, ['факт коробки', 'факт_коробки', 'факт', 'fact']);
+  // Показываем заголовки для отладки
+  if(debugMode){
+    console.log('Заголовки CSV:', headers);
+    els.debugInfo.style.display = 'block';
+    els.debugInfo.textContent = 'Заголовки: ' + headers.join(' | ');
+  }
   
-  // Проверяем, что нашли все нужные колонки
+  // Ищем индексы с приоритетом на точные совпадения
+  const dateIdx = findHeaderIndex(headers, ['дата', 'date', 'день', 'day']);
+  const corpusIdx = findHeaderIndex(headers, ['корпус', 'corpus', 'корп', 'цех']);
+  const planIdx = findHeaderIndex(headers, ['план коробки', 'план_коробки', 'план', 'plan', 'план коробок']);
+  const factIdx = findHeaderIndex(headers, ['факт коробки', 'факт_коробки', 'факт', 'fact', 'факт коробок']);
+  
+  if(debugMode){
+    console.log('Найденные индексы:', { dateIdx, corpusIdx, planIdx, factIdx });
+    els.debugInfo.textContent += '\nИндексы: date=' + dateIdx + ', corpus=' + corpusIdx + ', plan=' + planIdx + ', fact=' + factIdx;
+  }
+  
+  // Если не нашли все колонки, пробуем альтернативный подход - ищем по номерам
   if(dateIdx === -1 || corpusIdx === -1 || planIdx === -1 || factIdx === -1){
-    console.warn('Не найдены все колонки:', {
-      date: dateIdx, corpus: corpusIdx, plan: planIdx, fact: factIdx,
-      headers: headers.slice(0, 5)
-    });
+    // Пробуем найти по позициям, если названия не совпадают
+    console.warn('Не все колонки найдены, пробуем альтернативный поиск');
+    
+    // Иногда данные могут быть в колонках: Дата, Корпус, План, Факт
+    const altDate = headers.findIndex(h => /дата|date|день/i.test(h));
+    const altCorpus = headers.findIndex(h => /корпус|corpus|корп|цех/i.test(h));
+    const altPlan = headers.findIndex(h => /план|plan/i.test(h) && !/факт|fact/i.test(h));
+    const altFact = headers.findIndex(h => /факт|fact/i.test(h) && !/план|plan/i.test(h));
+    
+    if(altDate !== -1 && altCorpus !== -1 && altPlan !== -1 && altFact !== -1){
+      if(debugMode){
+        console.log('Альтернативные индексы:', { date: altDate, corpus: altCorpus, plan: altPlan, fact: altFact });
+      }
+      // Используем альтернативные индексы
+      return parseRows(raw, altDate, altCorpus, altPlan, altFact);
+    }
+    
     return [];
   }
   
+  return parseRows(raw, dateIdx, corpusIdx, planIdx, factIdx);
+}
+
+function parseRows(raw, dateIdx, corpusIdx, planIdx, factIdx){
   const result = [];
+  const uniqueCorps = new Set();
+  
   for(let i = 1; i < raw.length; i++){
     const row = raw[i];
+    if(row.length <= Math.max(dateIdx, corpusIdx, planIdx, factIdx)) continue;
+    
     const date = String(row[dateIdx] || '').trim();
     const corpus = String(row[corpusIdx] || '').trim();
     const plan = parseNumber(row[planIdx]);
     const fact = parseNumber(row[factIdx]);
     
-    if(date && corpus && (plan > 0 || fact > 0)){
+    // Пропускаем пустые строки
+    if(!date || !corpus) continue;
+    if(plan === 0 && fact === 0) continue;
+    
+    // Добавляем только если есть план или факт
+    if(plan > 0 || fact > 0){
       result.push({ date, corpus, plan, fact });
+      uniqueCorps.add(corpus);
     }
+  }
+  
+  if(debugMode){
+    console.log('Найдено строк:', result.length);
+    console.log('Уникальные корпуса:', Array.from(uniqueCorps));
+    console.log('Примеры данных:', result.slice(0, 5));
+    els.debugInfo.textContent += '\nСтрок: ' + result.length + ', корпусов: ' + uniqueCorps.size;
   }
   
   return result;
@@ -303,7 +363,6 @@ function groupByDate(rows){
     groups.get(key).push(r);
   });
   return Array.from(groups.entries()).sort((a, b) => {
-    // Сортируем как строки (формат DD.MM.YYYY или YYYY-MM-DD)
     return a[0].localeCompare(b[0]);
   });
 }
@@ -315,7 +374,8 @@ function aggregate(rows){
     summary.plan += r.plan;
     summary.fact += r.fact;
     
-    const key = 'Корпус ' + r.corpus;
+    // Используем имя корпуса как есть
+    const key = r.corpus;
     if(!summary.corps[key]){
       summary.corps[key] = { plan: 0, fact: 0 };
     }
@@ -337,6 +397,9 @@ function renderCorps(corpsData){
     return;
   }
   
+  // Сортируем корпуса по имени для стабильного порядка
+  entries.sort((a, b) => a[0].localeCompare(b[0], undefined, { numeric: true }));
+  
   entries.forEach(([name, data]) => {
     const pct = data.plan > 0 ? (data.fact / data.plan) * 100 : 0;
     const div = document.createElement('div');
@@ -356,11 +419,14 @@ function renderChart(corpsData){
   const data = [];
   const colors = [];
   
-  Object.entries(corpsData).forEach(([name, v]) => {
-    if(v.plan > 0){
-      const pct = (v.fact / v.plan) * 100;
+  // Сортируем для стабильного порядка
+  const entries = Object.entries(corpsData).sort((a, b) => a[0].localeCompare(b[0], undefined, { numeric: true }));
+  
+  entries.forEach(([name, v]) => {
+    if(v.plan > 0 || v.fact > 0){
+      const pct = v.plan > 0 ? (v.fact / v.plan) * 100 : 0;
       labels.push(name);
-      data.push(Math.min(pct, 150)); // ограничиваем для читаемости
+      data.push(Math.min(pct, 150));
       colors.push(getBarColor(pct));
     }
   });
@@ -404,10 +470,17 @@ function renderChart(corpsData){
         tooltip: {
           callbacks: {
             label: function(context) {
-              const actualPct = Object.values(corpsData)[context.dataIndex]?.plan > 0 
-                ? (Object.values(corpsData)[context.dataIndex].fact / Object.values(corpsData)[context.dataIndex].plan) * 100
-                : context.raw;
-              return actualPct.toFixed(1) + '%';
+              const idx = context.dataIndex;
+              const keys = Object.keys(corpsData).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+              if(idx < keys.length){
+                const key = keys[idx];
+                const v = corpsData[key];
+                if(v.plan > 0){
+                  const pct = (v.fact / v.plan) * 100;
+                  return pct.toFixed(1) + '% (факт: ' + formatNumber(v.fact) + ', план: ' + formatNumber(v.plan) + ')';
+                }
+              }
+              return context.raw.toFixed(1) + '%';
             }
           }
         }
@@ -451,7 +524,6 @@ async function loadData(){
   try {
     kpiSub.innerHTML = 'Загрузка<span class="loader"></span>';
     
-    // Добавляем timestamp для обхода кэша
     const url = CSV_URL + (CSV_URL.includes('?') ? '&' : '?') + 't=' + Date.now();
     const response = await fetch(url, {
       cache: 'no-cache',
@@ -466,6 +538,12 @@ async function loadData(){
     
     if(!text || text.trim().length < 10){
       throw new Error('Получен пустой ответ от сервера');
+    }
+    
+    // Показываем первые 200 символов для отладки
+    if(debugMode){
+      console.log('Первые 200 символов CSV:', text.substring(0, 200));
+      els.debugInfo.textContent += '\nCSV начало: ' + text.substring(0, 100);
     }
     
     const rawRows = parseCSV(text);
@@ -520,11 +598,15 @@ async function loadData(){
     els.chartWrap.style.display = 'none';
     els.chartTitle.style.display = 'none';
     
-    // Планируем повторную попытку через 30 секунд
     clearTimeout(window._retryTimeout);
     window._retryTimeout = setTimeout(loadData, 30000);
   }
 }
+
+// Включаем отладку для проверки
+debugMode = true;
+els.debugInfo.style.display = 'block';
+els.debugInfo.textContent = 'Режим отладки включен. Проверяем данные...\n';
 
 // Первичная загрузка
 loadData();
@@ -532,10 +614,9 @@ loadData();
 // Автообновление каждые 5 минут
 setInterval(loadData, 300000);
 
-// Дополнительная проверка: если вкладка была неактивна, обновляем при возврате
+// Обновление при возвращении на вкладку
 document.addEventListener('visibilitychange', function() {
   if(!document.hidden){
-    // Проверяем, не устарели ли данные (больше 6 минут)
     const lastUpdateText = els.lastUpdate.textContent;
     if(lastUpdateText && lastUpdateText !== '—'){
       const match = lastUpdateText.match(/(\d{2}):(\d{2}):(\d{2})/);
@@ -543,7 +624,6 @@ document.addEventListener('visibilitychange', function() {
         const now = new Date();
         const then = new Date();
         then.setHours(parseInt(match[1]), parseInt(match[2]), parseInt(match[3]));
-        // Если прошло больше 6 минут, обновляем
         if((now - then) > 360000){
           loadData();
         }
