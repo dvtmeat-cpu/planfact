@@ -7,7 +7,6 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js" defer></script>
   <style>
     :root{
       --bg:#f3f4f6;
@@ -28,14 +27,9 @@
       background:var(--bg);
       color:var(--text);
       font:15px/1.45 Inter,system-ui,sans-serif;
-      min-height:100vh;
-      display:flex;
-      align-items:flex-start;
-      justify-content:center;
     }
     .shell{
       max-width:412px;
-      width:100%;
       margin:0 auto;
       padding:8px;
     }
@@ -74,7 +68,6 @@
     .corps{
       display:grid;
       gap:6px;
-      margin-bottom:8px;
     }
     .corp-card{
       background:var(--surface2);
@@ -87,7 +80,6 @@
       letter-spacing:.08em;
       color:var(--muted);
       margin-bottom:4px;
-      font-weight:600;
     }
     .row{
       display:flex;
@@ -103,67 +95,6 @@
     .ok{color:var(--success)}
     .warnc{color:var(--warn)}
     .bad{color:var(--error)}
-
-    .chart-title{
-      font-size:11px;
-      text-transform:uppercase;
-      letter-spacing:.1em;
-      color:var(--muted);
-      margin:4px 0 4px;
-    }
-    .chart-wrap{
-      height:140px;
-      position:relative;
-    }
-    .chart-wrap canvas{
-      width:100% !important;
-      height:100% !important;
-    }
-    .last-update{
-      text-align:center;
-      font-size:10px;
-      color:var(--muted);
-      margin-top:8px;
-      padding-top:8px;
-      border-top:1px solid var(--border);
-    }
-    .error-msg{
-      font-size:13px;
-      color:#b42318;
-      text-align:center;
-      padding:20px 10px;
-    }
-    .error-msg small{
-      display:block;
-      margin-top:8px;
-      font-size:11px;
-      color:#66707a;
-    }
-    .loader{
-      text-align:center;
-      padding:20px 0;
-      color:var(--muted);
-    }
-    .loader::after{
-      content:'...';
-      animation: dots 1.5s steps(4) infinite;
-    }
-    @keyframes dots{
-      0%{content:''}
-      25%{content:'.'}
-      50%{content:'..'}
-      75%{content:'...'}
-    }
-    .debug-info{
-      font-size:10px;
-      color:var(--muted);
-      background:var(--surface2);
-      padding:6px 8px;
-      border-radius:6px;
-      margin-top:6px;
-      word-break:break-all;
-      display:none;
-    }
   </style>
 </head>
 <body>
@@ -172,34 +103,23 @@
     <div class="total">
       <div class="label">Общий процент выполнения плана</div>
       <div class="num" id="kpiPct">—</div>
-      <div class="sub" id="kpiSub">Загрузка<span class="loader"></span></div>
+      <div class="sub" id="kpiSub">Загрузка…</div>
     </div>
 
     <div class="corps" id="corps"></div>
-
-    <div class="chart-title" id="chartTitle">Корпуса — выполнение за последнюю дату</div>
-    <div class="chart-wrap" id="chartWrap"><canvas id="chart"></canvas></div>
-    <div class="last-update" id="lastUpdate">—</div>
-    <div class="debug-info" id="debugInfo"></div>
   </div>
 </div>
 
 <script>
+// опубликованный CSV из Google Sheets
 const CSV_URL = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vTjo8Kl0hQ0mNl72rKCvl1PkhwvGBpMF5zPz9H38wlPB_SU2xB7C9oLUWsUlidrc2bBUASvwP0L4XCK/pub?gid=468373869&single=true&output=csv';
 
 const els = {
   rootCard: document.getElementById('rootCard'),
   kpiPct: document.getElementById('kpiPct'),
   kpiSub: document.getElementById('kpiSub'),
-  corps: document.getElementById('corps'),
-  chartWrap: document.getElementById('chartWrap'),
-  chartTitle: document.getElementById('chartTitle'),
-  lastUpdate: document.getElementById('lastUpdate'),
-  debugInfo: document.getElementById('debugInfo')
+  corps: document.getElementById('corps')
 };
-
-let chart = null;
-let debugMode = false; // Включите для отладки
 
 function parseCSV(text){
   const rows = [];
@@ -214,9 +134,7 @@ function parseCSV(text){
     } else if((c === '\n' || c === '\r') && !q){
       if(c === '\r' && n === '\n') i++;
       row.push(field);
-      if(row.some(v => v.trim() !== '')){
-        rows.push(row);
-      }
+      rows.push(row);
       row = [];
       field = '';
     } else {
@@ -225,412 +143,132 @@ function parseCSV(text){
   }
   if(field.length || row.length){
     row.push(field);
-    if(row.some(v => v.trim() !== '')){
-      rows.push(row);
-    }
+    rows.push(row);
   }
-  return rows;
+  return rows.filter(r => r.some(v => String(v).trim() !== ''));
 }
 
-function normalize(str){
-  return String(str || '').trim().toLowerCase().replace(/ё/g,'е').replace(/\s+/g,' ');
-}
+const nk = s => String(s || '').trim().toLowerCase().replace(/ё/g,'е');
+const num = v => {
+  const s = String(v ?? '').replace(/\s+/g,'').replace(',', '.');
+  const m = s.match(/-?\d+(?:\.\d+)?/);
+  return m ? Number(m[0]) : 0;
+};
+const fmt = n => new Intl.NumberFormat('ru-RU',{maximumFractionDigits:0}).format(Math.round(n || 0));
+const pct = v => Number.isFinite(v) ? `${v.toFixed(1)}%` : '—';
+const cls = p => p >= 100 ? 'ok' : p >= 90 ? 'warnc' : 'bad';
 
-function findHeaderIndex(headers, variants){
-  const normalizedHeaders = headers.map(h => normalize(h));
-  for(const v of variants){
-    const nv = normalize(v);
-    const idx = normalizedHeaders.findIndex(h => h === nv || h.includes(nv) || nv.includes(h));
-    if(idx !== -1) return idx;
-  }
-  return -1;
-}
-
-function parseNumber(val){
-  if(val === undefined || val === null || val === '') return 0;
-  const s = String(val).replace(/\s+/g,'').replace(',', '.');
-  const match = s.match(/-?\d+(?:\.\d+)?/);
-  return match ? Number(match[0]) : 0;
-}
-
-function formatNumber(n){
-  return new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 0 }).format(Math.round(n || 0));
-}
-
-function formatPercent(v){
-  return Number.isFinite(v) ? v.toFixed(1) + '%' : '—';
-}
-
-function getColorClass(pct){
-  if(pct >= 100) return 'ok';
-  if(pct >= 90) return 'warnc';
-  return 'bad';
-}
-
-function getBarColor(pct){
-  if(pct >= 100) return 'rgba(47,180,84,.9)';
-  if(pct >= 90) return 'rgba(183,110,0,.9)';
-  return 'rgba(180,35,24,.9)';
-}
-
+// парсим строки в объект
 function mapRows(raw){
   if(!raw.length) return [];
-  
-  const headers = raw[0].map(h => String(h || '').trim());
-  
-  // Показываем заголовки для отладки
-  if(debugMode){
-    console.log('Заголовки CSV:', headers);
-    els.debugInfo.style.display = 'block';
-    els.debugInfo.textContent = 'Заголовки: ' + headers.join(' | ');
-  }
-  
-  // Ищем индексы с приоритетом на точные совпадения
-  const dateIdx = findHeaderIndex(headers, ['дата', 'date', 'день', 'day']);
-  const corpusIdx = findHeaderIndex(headers, ['корпус', 'corpus', 'корп', 'цех']);
-  const planIdx = findHeaderIndex(headers, ['план коробки', 'план_коробки', 'план', 'plan', 'план коробок']);
-  const factIdx = findHeaderIndex(headers, ['факт коробки', 'факт_коробки', 'факт', 'fact', 'факт коробок']);
-  
-  if(debugMode){
-    console.log('Найденные индексы:', { dateIdx, corpusIdx, planIdx, factIdx });
-    els.debugInfo.textContent += '\nИндексы: date=' + dateIdx + ', corpus=' + corpusIdx + ', plan=' + planIdx + ', fact=' + factIdx;
-  }
-  
-  // Если не нашли все колонки, пробуем альтернативный подход - ищем по номерам
-  if(dateIdx === -1 || corpusIdx === -1 || planIdx === -1 || factIdx === -1){
-    // Пробуем найти по позициям, если названия не совпадают
-    console.warn('Не все колонки найдены, пробуем альтернативный поиск');
-    
-    // Иногда данные могут быть в колонках: Дата, Корпус, План, Факт
-    const altDate = headers.findIndex(h => /дата|date|день/i.test(h));
-    const altCorpus = headers.findIndex(h => /корпус|corpus|корп|цех/i.test(h));
-    const altPlan = headers.findIndex(h => /план|plan/i.test(h) && !/факт|fact/i.test(h));
-    const altFact = headers.findIndex(h => /факт|fact/i.test(h) && !/план|plan/i.test(h));
-    
-    if(altDate !== -1 && altCorpus !== -1 && altPlan !== -1 && altFact !== -1){
-      if(debugMode){
-        console.log('Альтернативные индексы:', { date: altDate, corpus: altCorpus, plan: altPlan, fact: altFact });
-      }
-      // Используем альтернативные индексы
-      return parseRows(raw, altDate, altCorpus, altPlan, altFact);
-    }
-    
-    return [];
-  }
-  
-  return parseRows(raw, dateIdx, corpusIdx, planIdx, factIdx);
+  const h = raw[0].map(nk);
+  const idx = vars => h.findIndex(x => vars.some(v => x.includes(v)));
+
+  const m = {
+    date: idx(['дата']),
+    corpus: idx(['корпус']),
+    plan: idx(['план_коробки','план коробки','план']),
+    fact: idx(['факт_коробки','факт коробки','факт']),
+    scrap: idx(['брак_коробки','брак коробки','брак'])
+  };
+
+  return raw.slice(1).map(r => ({
+    date: r[m.date] || '',
+    corpus: r[m.corpus] || '—',
+    plan: num(r[m.plan]),
+    fact: num(r[m.fact]),
+    scrap: num(r[m.scrap])
+  })).filter(r => r.date);
 }
 
-function parseRows(raw, dateIdx, corpusIdx, planIdx, factIdx){
-  const result = [];
-  const uniqueCorps = new Set();
-  
-  for(let i = 1; i < raw.length; i++){
-    const row = raw[i];
-    if(row.length <= Math.max(dateIdx, corpusIdx, planIdx, factIdx)) continue;
-    
-    const date = String(row[dateIdx] || '').trim();
-    const corpus = String(row[corpusIdx] || '').trim();
-    const plan = parseNumber(row[planIdx]);
-    const fact = parseNumber(row[factIdx]);
-    
-    // Пропускаем пустые строки
-    if(!date || !corpus) continue;
-    if(plan === 0 && fact === 0) continue;
-    
-    // Добавляем только если есть план или факт
-    if(plan > 0 || fact > 0){
-      result.push({ date, corpus, plan, fact });
-      uniqueCorps.add(corpus);
-    }
-  }
-  
-  if(debugMode){
-    console.log('Найдено строк:', result.length);
-    console.log('Уникальные корпуса:', Array.from(uniqueCorps));
-    console.log('Примеры данных:', result.slice(0, 5));
-    els.debugInfo.textContent += '\nСтрок: ' + result.length + ', корпусов: ' + uniqueCorps.size;
-  }
-  
-  return result;
-}
-
+// группировка по дате
 function groupByDate(rows){
-  const groups = new Map();
+  const g = new Map();
   rows.forEach(r => {
-    const key = r.date;
-    if(!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(r);
+    if(!g.has(r.date)) g.set(r.date, []);
+    g.get(r.date).push(r);
   });
-  return Array.from(groups.entries()).sort((a, b) => {
-    return a[0].localeCompare(b[0]);
-  });
+  return [...g.entries()].sort((a,b) => String(a[0]).localeCompare(String(b[0])));
 }
 
-function aggregate(rows){
-  const summary = { plan: 0, fact: 0, corps: {} };
-  
+// суммы по последней дате
+function summarize(rows){
+  const s = {
+    plan:0,
+    fact:0,
+    scrap:0,
+    corps:{}
+  };
+
   rows.forEach(r => {
-    summary.plan += r.plan;
-    summary.fact += r.fact;
-    
-    // Используем имя корпуса как есть
-    const key = r.corpus;
-    if(!summary.corps[key]){
-      summary.corps[key] = { plan: 0, fact: 0 };
+    s.plan += r.plan;
+    s.fact += r.fact;
+    s.scrap += r.scrap;
+
+    const key = `Корпус ${r.corpus}`;
+    if(!s.corps[key]){
+      s.corps[key] = { plan:0, fact:0, scrap:0 };
     }
-    summary.corps[key].plan += r.plan;
-    summary.corps[key].fact += r.fact;
+    s.corps[key].plan  += r.plan;
+    s.corps[key].fact  += r.fact;
+    s.corps[key].scrap += r.scrap;
   });
-  
-  summary.percent = summary.plan > 0 ? (summary.fact / summary.plan) * 100 : 0;
-  return summary;
+
+  s.totalPct = s.plan ? s.fact / s.plan * 100 : 0;
+  s.scrapPct = s.fact ? s.scrap / s.fact * 100 : 0;
+
+  return s;
 }
 
-function renderCorps(corpsData){
-  const container = els.corps;
-  container.innerHTML = '';
-  
-  const entries = Object.entries(corpsData);
-  if(!entries.length){
-    container.innerHTML = '<div style="text-align:center;color:var(--muted);padding:10px;font-size:13px;">Нет данных по корпусам</div>';
-    return;
-  }
-  
-  // Сортируем корпуса по имени для стабильного порядка
-  entries.sort((a, b) => a[0].localeCompare(b[0], undefined, { numeric: true }));
-  
-  entries.forEach(([name, data]) => {
-    const pct = data.plan > 0 ? (data.fact / data.plan) * 100 : 0;
-    const div = document.createElement('div');
-    div.className = 'corp-card';
-    div.innerHTML = `
-      <div class="corp-title">${name}</div>
-      <div class="row"><span class="k">План</span><span>${formatNumber(data.plan)}</span></div>
-      <div class="row"><span class="k">Факт</span><span>${formatNumber(data.fact)}</span></div>
-      <div class="row"><span class="k">Выполнение</span><span class="${getColorClass(pct)}">${formatPercent(pct)}</span></div>
-    `;
-    container.appendChild(div);
-  });
+// рендер корпусов
+function renderCorps(corps){
+  els.corps.innerHTML = Object.entries(corps)
+    .map(([name,v]) => {
+      const perf = v.plan ? v.fact / v.plan * 100 : 0;
+      const scrapPct = v.fact ? v.scrap / v.fact * 100 : 0;
+
+      return `<div class="corp-card">
+        <div class="corp-title">${name}</div>
+        <div class="row"><span class="k">План</span><span>${fmt(v.plan)}</span></div>
+        <div class="row"><span class="k">Факт</span><span>${fmt(v.fact)}</span></div>
+        <div class="row"><span class="k">Выполнение</span><span class="${cls(perf)}">${pct(perf)}</span></div>
+        <div class="row"><span class="k">Брак</span><span>${pct(scrapPct)}</span></div>
+      </div>`;
+    })
+    .join('');
 }
 
-function renderChart(corpsData){
-  const labels = [];
-  const data = [];
-  const colors = [];
-  
-  // Сортируем для стабильного порядка
-  const entries = Object.entries(corpsData).sort((a, b) => a[0].localeCompare(b[0], undefined, { numeric: true }));
-  
-  entries.forEach(([name, v]) => {
-    if(v.plan > 0 || v.fact > 0){
-      const pct = v.plan > 0 ? (v.fact / v.plan) * 100 : 0;
-      labels.push(name);
-      data.push(Math.min(pct, 150));
-      colors.push(getBarColor(pct));
-    }
-  });
-  
-  if(!labels.length){
-    if(chart){ chart.destroy(); chart = null; }
-    els.chartWrap.style.display = 'none';
-    els.chartTitle.style.display = 'none';
-    return;
-  }
-  
-  els.chartWrap.style.display = '';
-  els.chartTitle.style.display = '';
-  
-  if(chart){
-    chart.destroy();
-    chart = null;
-  }
-  
-  const ctx = document.getElementById('chart').getContext('2d');
-  chart = new Chart(ctx, {
-    type: 'bar',
-    data: {
-      labels: labels,
-      datasets: [{
-        label: 'Выполнение, %',
-        data: data,
-        backgroundColor: colors,
-        borderRadius: 6,
-        borderSkipped: false,
-        maxBarThickness: 32,
-        minBarLength: 4
-      }]
-    },
-    options: {
-      indexAxis: 'y',
-      responsive: true,
-      maintainAspectRatio: false,
-      plugins: {
-        legend: { display: false },
-        tooltip: {
-          callbacks: {
-            label: function(context) {
-              const idx = context.dataIndex;
-              const keys = Object.keys(corpsData).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
-              if(idx < keys.length){
-                const key = keys[idx];
-                const v = corpsData[key];
-                if(v.plan > 0){
-                  const pct = (v.fact / v.plan) * 100;
-                  return pct.toFixed(1) + '% (факт: ' + formatNumber(v.fact) + ', план: ' + formatNumber(v.plan) + ')';
-                }
-              }
-              return context.raw.toFixed(1) + '%';
-            }
-          }
-        }
-      },
-      scales: {
-        x: {
-          beginAtZero: true,
-          max: 110,
-          ticks: {
-            callback: function(v) { return v + '%'; },
-            font: { size: 10 }
-          },
-          grid: { color: 'rgba(148,163,184,.25)' }
-        },
-        y: {
-          ticks: { 
-            font: { size: 10, weight: '500' },
-            maxRotation: 0
-          },
-          grid: { display: false }
-        }
-      }
-    }
-  });
-}
+// основная загрузка
+async function load(){
+  try{
+    els.kpiSub.textContent = 'Загрузка…';
 
-function updateLastUpdate() {
-  const now = new Date();
-  const timeStr = now.toLocaleString('ru-RU', {
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit'
-  });
-  els.lastUpdate.textContent = 'Обновлено: ' + timeStr;
-}
+    const res = await fetch(CSV_URL + '&ts=' + Date.now());
+    if(!res.ok) throw new Error('HTTP ' + res.status);
 
-async function loadData(){
-  const kpiPct = els.kpiPct;
-  const kpiSub = els.kpiSub;
-  
-  try {
-    kpiSub.innerHTML = 'Загрузка<span class="loader"></span>';
-    
-    const url = CSV_URL + (CSV_URL.includes('?') ? '&' : '?') + 't=' + Date.now();
-    const response = await fetch(url, {
-      cache: 'no-cache',
-      headers: { 'Cache-Control': 'no-cache' }
-    });
-    
-    if(!response.ok){
-      throw new Error('HTTP ' + response.status + ': ' + response.statusText);
-    }
-    
-    const text = await response.text();
-    
-    if(!text || text.trim().length < 10){
-      throw new Error('Получен пустой ответ от сервера');
-    }
-    
-    // Показываем первые 200 символов для отладки
-    if(debugMode){
-      console.log('Первые 200 символов CSV:', text.substring(0, 200));
-      els.debugInfo.textContent += '\nCSV начало: ' + text.substring(0, 100);
-    }
-    
-    const rawRows = parseCSV(text);
-    if(!rawRows.length){
-      throw new Error('CSV не содержит строк');
-    }
-    
-    const dataRows = mapRows(rawRows);
-    if(!dataRows.length){
-      throw new Error('Не удалось распознать данные. Проверьте структуру CSV.');
-    }
-    
-    const grouped = groupByDate(dataRows);
-    if(!grouped.length){
-      throw new Error('Нет данных за доступные даты');
-    }
-    
-    // Берем последнюю дату
-    const latestDate = grouped[grouped.length - 1];
-    const latestRows = latestDate[1];
-    const summary = aggregate(latestRows);
-    
-    // Обновляем KPI
-    const percent = summary.percent;
-    kpiPct.textContent = formatPercent(percent);
-    kpiPct.className = 'num ' + getColorClass(percent);
-    kpiSub.textContent = formatNumber(summary.fact) + ' из ' + formatNumber(summary.plan) + ' коробок';
-    
-    // Рендерим карточки корпусов
-    renderCorps(summary.corps);
-    
-    // Рендерим диаграмму
-    renderChart(summary.corps);
-    
-    // Обновляем время
-    updateLastUpdate();
-    
-  } catch(error) {
-    console.error('Ошибка загрузки:', error);
-    kpiPct.textContent = '⚠️';
-    kpiPct.className = 'num bad';
-    kpiSub.textContent = 'Ошибка';
-    
-    els.corps.innerHTML = `
-      <div class="error-msg">
-        Не удалось загрузить данные
-        <small>${error.message}</small>
-        <small style="margin-top:4px;">Попытка перезагрузки через 30 секунд...</small>
-      </div>
-    `;
-    
-    els.chartWrap.style.display = 'none';
-    els.chartTitle.style.display = 'none';
-    
-    clearTimeout(window._retryTimeout);
-    window._retryTimeout = setTimeout(loadData, 30000);
+    const rawRows = parseCSV(await res.text());
+    const rows = mapRows(rawRows);
+    if(!rows.length) throw new Error('CSV пуст или не распознан');
+
+    const grouped = groupByDate(rows);
+    const latestRows = grouped[grouped.length - 1]?.[1] || [];
+    const s = summarize(latestRows);
+
+    els.kpiPct.textContent = pct(s.totalPct);
+    els.kpiPct.className = 'num ' + cls(s.totalPct);
+
+    const scrapText = s.fact ? `, брак ${pct(s.scrapPct)}` : '';
+    els.kpiSub.textContent = `${fmt(s.fact)} из ${fmt(s.plan)} коробок${scrapText}`;
+
+    renderCorps(s.corps);
+  }catch(e){
+    els.rootCard.innerHTML =
+      `<div style="font-size:13px;color:#b42318">Ошибка загрузки: ${e.message}</div>`;
   }
 }
 
-// Включаем отладку для проверки
-debugMode = true;
-els.debugInfo.style.display = 'block';
-els.debugInfo.textContent = 'Режим отладки включен. Проверяем данные...\n';
-
-// Первичная загрузка
-loadData();
-
-// Автообновление каждые 5 минут
-setInterval(loadData, 300000);
-
-// Обновление при возвращении на вкладку
-document.addEventListener('visibilitychange', function() {
-  if(!document.hidden){
-    const lastUpdateText = els.lastUpdate.textContent;
-    if(lastUpdateText && lastUpdateText !== '—'){
-      const match = lastUpdateText.match(/(\d{2}):(\d{2}):(\d{2})/);
-      if(match){
-        const now = new Date();
-        const then = new Date();
-        then.setHours(parseInt(match[1]), parseInt(match[2]), parseInt(match[3]));
-        if((now - then) > 360000){
-          loadData();
-        }
-      }
-    }
-  }
-});
+load();
+setInterval(load, 300000);
 </script>
 </body>
 </html>
